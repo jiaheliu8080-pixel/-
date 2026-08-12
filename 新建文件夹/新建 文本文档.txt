@@ -1,0 +1,99 @@
+import streamlit as st
+import yfinance as yf
+import pandas as pd
+import plotly.graph_objects as go
+
+# 页面初始配置
+st.set_page_config(page_title="股市自选监控与预警系统", layout="wide", page_icon="📈")
+
+st.title("📈 股市自选股波动监控与预警系统")
+
+# 侧边栏：参数配置
+st.sidebar.header("⚙️ 监控配置面板")
+
+# 1. 提供自选股票输入框
+ticker1 = st.sidebar.text_input("自选股票 1 (Ticker)", value="AAPL", help="如美股 AAPL, NVDA；港股 0700.HK")
+ticker2 = st.sidebar.text_input("自选股票 2 (Ticker)", value="NVDA", help="如美股 TSLA, MSFT")
+
+# 2. 预警阈值设置 (%)
+threshold = st.sidebar.number_input(
+    "波动预警阈值 (%)", 
+    min_value=0.1, 
+    max_value=30.0, 
+    value=2.0, 
+    step=0.1,
+    help="当涨跌幅度超过此数值时触发警告"
+)
+
+# 3. 基准选取
+baseline = st.sidebar.radio("参考比较基准", ["较昨收盘价 (Previous Close)", "较今日开盘价 (Open Price)"])
+
+tickers = [ticker1.strip().upper(), ticker2.strip().upper()]
+
+# 主界面：分两列展示两只股票
+col1, col2 = st.columns(2)
+
+for idx, ticker in enumerate(tickers):
+    current_col = col1 if idx == 0 else col2
+    
+    with current_col:
+        st.subheader(f"📊 {ticker} 实时走势")
+        if not ticker:
+            st.warning("请输入有效的股票代码")
+            continue
+            
+        try:
+            # 获取股票数据
+            stock = yf.Ticker(ticker)
+            df = stock.history(period="1d", interval="1m")
+            
+            if df.empty:
+                st.error(f"未能查询到 {ticker} 的实时数据，请检查代码拼写！")
+                continue
+            
+            latest_price = df['Close'].iloc[-1]
+            
+            # 计算基准价格与涨跌幅
+            if "昨收盘价" in baseline:
+                ref_price = stock.info.get("previousClose", df['Open'].iloc[0])
+            else:
+                ref_price = df['Open'].iloc[0]
+                
+            pct_change = ((latest_price - ref_price) / ref_price) * 100
+            
+            # 展示核心数据卡片
+            st.metric(
+                label=f"最新价格 ({ticker})", 
+                value=f"${latest_price:.2f}", 
+                delta=f"{pct_change:+.2f}%"
+            )
+            
+            # 🚨 波动预警判断逻辑
+            if abs(pct_change) >= threshold:
+                if pct_change > 0:
+                    st.error(f"🚨 **暴涨预警**！{ticker} 增幅达到 **{pct_change:+.2f}%**，突破预警阈值 (+{threshold}%)！")
+                else:
+                    st.error(f"📉 **暴跌预警**！{ticker} 跌幅达到 **{pct_change:+.2f}%**，突破预警阈值 (-{threshold}%)！")
+            else:
+                st.success(f"✅ 状态正常：当前波动 ({pct_change:+.2f}%) 未超过限制 (±{threshold}%)")
+                
+            # 绘制折线走势图
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=df.index, y=df['Close'], mode='lines', name='价格', line=dict(color='#1f77b4', width=2)))
+            
+            # 添加基准线
+            fig.add_hline(y=ref_price, line_dash="dash", line_color="gray", annotation_text="基准线")
+            
+            fig.update_layout(
+                title=f"{ticker} 今日分时走势",
+                xaxis_title="时间",
+                yaxis_title="价格 ($)",
+                height=380,
+                margin=dict(l=20, r=20, t=40, b=20)
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            
+        except Exception as e:
+            st.error(f"数据加载异常: {e}")
+
+st.caption("提示：可在侧边栏调整股票代码或预警比例。")
