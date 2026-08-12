@@ -1,99 +1,194 @@
 import streamlit as st
-import yfinance as yf
+import random
 import pandas as pd
-import plotly.graph_objects as go
+import plotly.express as px
+import requests
+from bs4 import BeautifulSoup
 
-# 页面初始配置
-st.set_page_config(page_title="股市自选监控与预警系统", layout="wide", page_icon="📈")
+# ==========================================
+# 页面配置与侧边栏菜单
+# ==========================================
+st.set_page_config(page_title="综合彩票分析与模拟系统", page_icon="🎰", layout="wide")
 
-st.title("📈 股市自选股波动监控与预警系统")
+st.sidebar.title("🎰 彩种切换面板")
+lottery_choice = st.sidebar.radio("请选择您要分析与模拟的彩票：", ["🔴 双色球 (SSQ)", "🔵 大乐透 (DLT)"])
 
-# 侧边栏：参数配置
-st.sidebar.header("⚙️ 监控配置面板")
+st.sidebar.divider()
+st.sidebar.caption("提示：彩票开奖是独立随机事件，没有任何算法能预测未来开奖。本工具仅用于概率演示与娱乐，请理性看待。")
 
-# 1. 提供自选股票输入框
-ticker1 = st.sidebar.text_input("自选股票 1 (Ticker)", value="AAPL", help="如美股 AAPL, NVDA；港股 0700.HK")
-ticker2 = st.sidebar.text_input("自选股票 2 (Ticker)", value="NVDA", help="如美股 TSLA, MSFT")
-
-# 2. 预警阈值设置 (%)
-threshold = st.sidebar.number_input(
-    "波动预警阈值 (%)", 
-    min_value=0.1, 
-    max_value=30.0, 
-    value=2.0, 
-    step=0.1,
-    help="当涨跌幅度超过此数值时触发警告"
-)
-
-# 3. 基准选取
-baseline = st.sidebar.radio("参考比较基准", ["较昨收盘价 (Previous Close)", "较今日开盘价 (Open Price)"])
-
-tickers = [ticker1.strip().upper(), ticker2.strip().upper()]
-
-# 主界面：分两列展示两只股票
-col1, col2 = st.columns(2)
-
-for idx, ticker in enumerate(tickers):
-    current_col = col1 if idx == 0 else col2
+# ==========================================
+# 核心功能函数：自动获取最新真实数据
+# ==========================================
+@st.cache_data(ttl=3600)
+def fetch_lottery_data(lotto_type):
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
     
-    with current_col:
-        st.subheader(f"📊 {ticker} 实时走势")
-        if not ticker:
-            st.warning("请输入有效的股票代码")
-            continue
-            
-        try:
-            # 获取股票数据
-            stock = yf.Ticker(ticker)
-            df = stock.history(period="1d", interval="1m")
-            
-            if df.empty:
-                st.error(f"未能查询到 {ticker} 的实时数据，请检查代码拼写！")
-                continue
-            
-            latest_price = df['Close'].iloc[-1]
-            
-            # 计算基准价格与涨跌幅
-            if "昨收盘价" in baseline:
-                ref_price = stock.info.get("previousClose", df['Open'].iloc[0])
-            else:
-                ref_price = df['Open'].iloc[0]
-                
-            pct_change = ((latest_price - ref_price) / ref_price) * 100
-            
-            # 展示核心数据卡片
-            st.metric(
-                label=f"最新价格 ({ticker})", 
-                value=f"${latest_price:.2f}", 
-                delta=f"{pct_change:+.2f}%"
-            )
-            
-            # 🚨 波动预警判断逻辑
-            if abs(pct_change) >= threshold:
-                if pct_change > 0:
-                    st.error(f"🚨 **暴涨预警**！{ticker} 增幅达到 **{pct_change:+.2f}%**，突破预警阈值 (+{threshold}%)！")
-                else:
-                    st.error(f"📉 **暴跌预警**！{ticker} 跌幅达到 **{pct_change:+.2f}%**，突破预警阈值 (-{threshold}%)！")
-            else:
-                st.success(f"✅ 状态正常：当前波动 ({pct_change:+.2f}%) 未超过限制 (±{threshold}%)")
-                
-            # 绘制折线走势图
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=df.index, y=df['Close'], mode='lines', name='价格', line=dict(color='#1f77b4', width=2)))
-            
-            # 添加基准线
-            fig.add_hline(y=ref_price, line_dash="dash", line_color="gray", annotation_text="基准线")
-            
-            fig.update_layout(
-                title=f"{ticker} 今日分时走势",
-                xaxis_title="时间",
-                yaxis_title="价格 ($)",
-                height=380,
-                margin=dict(l=20, r=20, t=40, b=20)
-            )
-            st.plotly_chart(fig, use_container_width=True)
-            
-        except Exception as e:
-            st.error(f"数据加载异常: {e}")
+    if lotto_type == "ssq":
+        url = "https://datachart.500.com/ssq/history/newinc/history.php?start=00000"
+    else:
+        url = "https://datachart.500.com/dlt/history/newinc/history.php?start=00000"
+        
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.encoding = 'utf-8'
+        soup = BeautifulSoup(response.text, 'html.parser')
+        tbody = soup.find('tbody', id='tdata')
+        
+        if not tbody:
+            return None, "未能解析到数据表格。"
 
-st.caption("提示：可在侧边栏调整股票代码或预警比例。")
+        rows = tbody.find_all('tr')
+        recent_data = []
+        count = 0
+        
+        for row in rows:
+            if 'class' in row.attrs and 'tdbck' in row['class']: continue
+            cols = row.find_all('td')
+            
+            if lotto_type == "ssq" and len(cols) >= 8:
+                qihao = cols[0].text.strip()
+                reds = " ".join([cols[i].text.strip() for i in range(1, 7)])
+                blue = cols[7].text.strip()
+                recent_data.append({"期号": qihao, "红球 (前区)": reds, "蓝球 (后区)": blue})
+                count += 1
+                
+            elif lotto_type == "dlt" and len(cols) >= 8:
+                qihao = cols[0].text.strip()
+                fronts = " ".join([cols[i].text.strip() for i in range(1, 6)])
+                backs = " ".join([cols[i].text.strip() for i in range(6, 8)])
+                recent_data.append({"期号": qihao, "红球 (前区)": fronts, "蓝球 (后区)": backs})
+                count += 1
+                
+            if count >= 10: break
+                
+        return recent_data, None
+    except Exception as e:
+        return None, f"抓取异常: {e}"
+
+# ==========================================
+# 界面渲染主逻辑
+# ==========================================
+if lottery_choice == "🔴 双色球 (SSQ)":
+    st.title("🔴 双色球 (6+1) 分析与模拟")
+    
+    st.header("📊 最新真实开奖记录 (近10期)")
+    with st.spinner("正在抓取双色球最新数据..."):
+        data_ssq, err = fetch_lottery_data("ssq")
+        if err:
+            st.error(err)
+        else:
+            st.dataframe(pd.DataFrame(data_ssq), use_container_width=True, hide_index=True)
+            
+    st.divider()
+    st.header("🎰 深度投资模拟器：坚守一注号码")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🎲 帮我机选一注双色球"):
+            st.session_state['ssq_red'] = sorted(random.sample(range(1, 34), 6))
+            st.session_state['ssq_blue'] = random.randint(1, 16)
+        my_red = st.session_state.get('ssq_red', [1, 2, 3, 4, 5, 6])
+        my_blue = st.session_state.get('ssq_blue', 7)
+        st.info(f"投注号码：\n\n🔴 **红球**：{' '.join([f'{n:02d}' for n in my_red])}\n\n🔵 **蓝球**：{my_blue:02d}")
+
+    with col2:
+        sim_count = st.select_slider("模拟购买期数 (每期2元)：", options=[100, 1000, 5000, 10000, 50000, 100000], value=1000, key="ssq_sim")
+        st.write(f"💵 预计投入成本：**{sim_count * 2} 元**")
+
+    if st.button("🚀 开始双色球模拟", key="ssq_btn"):
+        with st.spinner("光速开奖中..."):
+            prizes = {"一等奖":0, "二等奖":0, "三等奖":0, "四等奖":0, "五等奖":0, "六等奖":0, "未中奖":0}
+            total_win = 0
+            my_red_set = set(my_red)
+            
+            for _ in range(sim_count):
+                draw_r = set(random.sample(range(1, 34), 6))
+                draw_b = random.randint(1, 16)
+                r_hits = len(my_red_set.intersection(draw_r))
+                b_hit = (my_blue == draw_b)
+                
+                # 双色球真实中奖规则
+                if r_hits == 6 and b_hit: prizes["一等奖"] += 1; total_win += 5000000
+                elif r_hits == 6 and not b_hit: prizes["二等奖"] += 1; total_win += 150000
+                elif r_hits == 5 and b_hit: prizes["三等奖"] += 1; total_win += 3000
+                elif (r_hits == 5 and not b_hit) or (r_hits == 4 and b_hit): prizes["四等奖"] += 1; total_win += 200
+                elif (r_hits == 4 and not b_hit) or (r_hits == 3 and b_hit): prizes["五等奖"] += 1; total_win += 10
+                elif b_hit: prizes["六等奖"] += 1; total_win += 5
+                else: prizes["未中奖"] += 1
+                    
+            c1, c2, c3 = st.columns(3)
+            c1.metric("投入总计", f"{sim_count * 2} 元")
+            c2.metric("奖金总计", f"{total_win} 元", delta=f"{total_win - (sim_count*2)} 元")
+            c3.metric("综合中奖率", f"{(sim_count - prizes['未中奖']) / sim_count * 100:.2f} %")
+            
+            df_show = pd.DataFrame(list(prizes.items()), columns=["奖项", "次数"])
+            df_show = df_show[df_show["奖项"] != "未中奖"]
+            fig = px.bar(df_show, x="奖项", y="次数", text="次数", title="各奖项中签分布", color="次数", color_continuous_scale="Reds")
+            st.plotly_chart(fig, use_container_width=True)
+
+# -----------------------------------------------------------
+elif lottery_choice == "🔵 大乐透 (DLT)":
+    st.title("🔵 大乐透 (5+2) 分析与模拟")
+    
+    st.header("📊 最新真实开奖记录 (近10期)")
+    with st.spinner("正在抓取大乐透最新数据..."):
+        data_dlt, err = fetch_lottery_data("dlt")
+        if err:
+            st.error(err)
+        else:
+            st.dataframe(pd.DataFrame(data_dlt), use_container_width=True, hide_index=True)
+
+    st.divider()
+    st.header("🎰 深度投资模拟器：坚守一注号码")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🎲 帮我机选一注大乐透"):
+            st.session_state['dlt_front'] = sorted(random.sample(range(1, 36), 5))
+            st.session_state['dlt_back'] = sorted(random.sample(range(1, 13), 2))
+        my_front = st.session_state.get('dlt_front', [1, 2, 3, 4, 5])
+        my_back = st.session_state.get('dlt_back', [6, 7])
+        st.info(f"投注号码：\n\n🔴 **前区**：{' '.join([f'{n:02d}' for n in my_front])}\n\n🔵 **后区**：{' '.join([f'{n:02d}' for n in my_back])}")
+
+    with col2:
+        sim_count = st.select_slider("模拟购买期数 (每期2元)：", options=[100, 1000, 5000, 10000, 50000, 100000], value=1000, key="dlt_sim")
+        st.write(f"💵 预计投入成本：**{sim_count * 2} 元**")
+
+    if st.button("🚀 开始大乐透模拟", key="dlt_btn"):
+        with st.spinner("光速开奖中..."):
+            prizes = {"一等奖":0, "二等奖":0, "三等奖":0, "四等奖":0, "五等奖":0, "六等奖":0, "七等奖":0, "八等奖":0, "九等奖":0, "未中奖":0}
+            total_win = 0
+            my_f_set = set(my_front)
+            my_b_set = set(my_back)
+            
+            for _ in range(sim_count):
+                draw_f = set(random.sample(range(1, 36), 5))
+                draw_b = set(random.sample(range(1, 13), 2))
+                
+                f_hits = len(my_f_set.intersection(draw_f))
+                b_hits = len(my_b_set.intersection(draw_b))
+                
+                # 大乐透真实中奖规则 (基础投注奖金估算)
+                if f_hits == 5 and b_hits == 2: prizes["一等奖"] += 1; total_win += 10000000
+                elif f_hits == 5 and b_hits == 1: prizes["二等奖"] += 1; total_win += 100000
+                elif f_hits == 5 and b_hits == 0: prizes["三等奖"] += 1; total_win += 10000
+                elif f_hits == 4 and b_hits == 2: prizes["四等奖"] += 1; total_win += 3000
+                elif f_hits == 4 and b_hits == 1: prizes["五等奖"] += 1; total_win += 300
+                elif f_hits == 3 and b_hits == 2: prizes["六等奖"] += 1; total_win += 200
+                elif f_hits == 4 and b_hits == 0: prizes["七等奖"] += 1; total_win += 100
+                elif (f_hits == 3 and b_hits == 1) or (f_hits == 2 and b_hits == 2): prizes["八等奖"] += 1; total_win += 15
+                elif (f_hits == 3 and b_hits == 0) or (f_hits == 1 and b_hits == 2) or (f_hits == 2 and b_hits == 1) or (f_hits == 0 and b_hits == 2): prizes["九等奖"] += 1; total_win += 5
+                else: prizes["未中奖"] += 1
+                    
+            c1, c2, c3 = st.columns(3)
+            c1.metric("投入总计", f"{sim_count * 2} 元")
+            c2.metric("奖金总计", f"{total_win} 元", delta=f"{total_win - (sim_count*2)} 元")
+            # 大乐透的小奖相对容易中，综合中奖率通常比双色球高一点点
+            c3.metric("综合中奖率", f"{(sim_count - prizes['未中奖']) / sim_count * 100:.2f} %") 
+            
+            df_show = pd.DataFrame(list(prizes.items()), columns=["奖项", "次数"])
+            df_show = df_show[df_show["奖项"] != "未中奖"]
+            fig = px.bar(df_show, x="奖项", y="次数", text="次数", title="各奖项中签分布", color="次数", color_continuous_scale="Blues")
+            st.plotly_chart(fig, use_container_width=True)
